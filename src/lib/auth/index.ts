@@ -1,14 +1,9 @@
 import NextAuth from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
-import bcrypt from "bcryptjs";
-import Database from "better-sqlite3";
-import path from "path";
 import { authConfig } from "./config";
 
-const dbPath = path.join(process.cwd(), "portfolio.db");
-
 /**
- * Full auth config with Node.js-only modules.
+ * Full auth config with database access.
  * This file should ONLY be imported in server components and API routes,
  * NEVER in middleware (use config.ts for middleware).
  */
@@ -27,17 +22,19 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         }
 
         try {
-          const sqlite = new Database(dbPath);
-          const user = sqlite.prepare(
-            "SELECT * FROM users WHERE username = ?"
-          ).get(credentials.username as string) as {
-            id: number;
-            username: string;
-            email: string;
-            password_hash: string;
-          } | undefined;
+          // Dynamic imports to keep this compatible
+          const { db } = await import("@/lib/db");
+          const { users } = await import("@/lib/db/schema");
+          const { eq } = await import("drizzle-orm");
+          const bcrypt = (await import("bcryptjs")).default;
 
-          sqlite.close();
+          const result = await db
+            .select()
+            .from(users)
+            .where(eq(users.username, credentials.username as string))
+            .limit(1);
+
+          const user = result[0];
 
           if (!user) {
             return null;
@@ -45,7 +42,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
 
           const isValid = await bcrypt.compare(
             credentials.password as string,
-            user.password_hash
+            user.passwordHash
           );
 
           if (!isValid) {

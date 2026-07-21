@@ -1,18 +1,20 @@
-import Database from "better-sqlite3";
-import { drizzle } from "drizzle-orm/better-sqlite3";
+import { createClient } from "@libsql/client";
+import { drizzle } from "drizzle-orm/libsql";
 import bcrypt from "bcryptjs";
 import * as schema from "./schema";
-import path from "path";
 
-const dbPath = path.join(process.cwd(), "portfolio.db");
-const sqlite = new Database(dbPath);
-const db = drizzle(sqlite, { schema });
+const client = createClient({
+  url: process.env.TURSO_DATABASE_URL || "file:portfolio.db",
+  authToken: process.env.TURSO_AUTH_TOKEN,
+});
+
+const db = drizzle(client, { schema });
 
 async function seed() {
   console.log("🌱 Seeding database...");
 
   // Create tables
-  sqlite.exec(`
+  await client.executeMultiple(`
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       username TEXT UNIQUE NOT NULL,
@@ -101,61 +103,67 @@ async function seed() {
 
   // Create admin user
   const passwordHash = await bcrypt.hash("admin123", 12);
-  
-  const existingUser = sqlite.prepare("SELECT id FROM users WHERE username = ?").get("admin");
-  
+
+  const existingUser = await client.execute({
+    sql: "SELECT id FROM users WHERE username = ?",
+    args: ["admin"],
+  });
+
   let userId: number;
-  if (!existingUser) {
-    const result = sqlite.prepare(
-      "INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)"
-    ).run("admin", "admin@portfolio.dev", passwordHash);
-    userId = result.lastInsertRowid as number;
+  if (existingUser.rows.length === 0) {
+    const result = await client.execute({
+      sql: "INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)",
+      args: ["admin", "admin@portfolio.dev", passwordHash],
+    });
+    userId = Number(result.lastInsertRowid);
     console.log("✅ Admin user created (username: admin, password: admin123)");
   } else {
-    userId = (existingUser as { id: number }).id;
+    userId = Number(existingUser.rows[0].id);
     console.log("ℹ️  Admin user already exists");
   }
 
   // Seed profile
-  const existingProfile = sqlite.prepare("SELECT id FROM profile WHERE user_id = ?").get(userId);
-  if (!existingProfile) {
-    sqlite.prepare(`
-      INSERT INTO profile (user_id, full_name, title, bio, handle, rating, rank, location, github_url, linkedin_url)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      userId,
-      "Himanshu Kumar",
-      "Full Stack Developer",
-      "Passionate software developer with expertise in building scalable web applications. Experienced in modern JavaScript frameworks, backend systems, and cloud technologies. I love solving complex problems and contributing to open-source projects. Currently focused on building performant, accessible web experiences.",
-      "himanshu_dev",
-      1842,
-      "candidate master",
-      "India",
-      "https://github.com/himanshuzen10x",
-      "https://linkedin.com/in/himanshu-kumar"
-    );
+  const existingProfile = await client.execute({
+    sql: "SELECT id FROM profile WHERE user_id = ?",
+    args: [userId],
+  });
+
+  if (existingProfile.rows.length === 0) {
+    await client.execute({
+      sql: `INSERT INTO profile (user_id, full_name, title, bio, handle, rating, rank, location, github_url, linkedin_url)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        userId,
+        "Himanshu Kumar",
+        "Full Stack Developer",
+        "Passionate software developer with expertise in building scalable web applications. Experienced in modern JavaScript frameworks, backend systems, and cloud technologies. I love solving complex problems and contributing to open-source projects. Currently focused on building performant, accessible web experiences.",
+        "himanshu_dev",
+        1842,
+        "candidate master",
+        "India",
+        "https://github.com/himanshuzen10x",
+        "https://linkedin.com/in/himanshu-kumar",
+      ],
+    });
     console.log("✅ Profile seeded");
   }
 
   // Seed skills
-  const existingSkills = sqlite.prepare("SELECT COUNT(*) as count FROM skills").get() as { count: number };
-  if (existingSkills.count === 0) {
+  const existingSkills = await client.execute("SELECT COUNT(*) as count FROM skills");
+  if (Number(existingSkills.rows[0].count) === 0) {
     const skillsData = [
-      // Languages
       { name: "JavaScript", category: "Language", proficiency: 92, order: 1 },
       { name: "TypeScript", category: "Language", proficiency: 88, order: 2 },
       { name: "Python", category: "Language", proficiency: 85, order: 3 },
       { name: "Java", category: "Language", proficiency: 75, order: 4 },
       { name: "C++", category: "Language", proficiency: 70, order: 5 },
       { name: "SQL", category: "Language", proficiency: 82, order: 6 },
-      // Frameworks
       { name: "React.js", category: "Framework", proficiency: 90, order: 1 },
       { name: "Next.js", category: "Framework", proficiency: 88, order: 2 },
       { name: "Node.js", category: "Framework", proficiency: 86, order: 3 },
       { name: "Express.js", category: "Framework", proficiency: 84, order: 4 },
       { name: "Django", category: "Framework", proficiency: 72, order: 5 },
       { name: "Spring Boot", category: "Framework", proficiency: 65, order: 6 },
-      // Tools & Technologies
       { name: "Git", category: "Tool", proficiency: 90, order: 1 },
       { name: "Docker", category: "Tool", proficiency: 78, order: 2 },
       { name: "AWS", category: "Tool", proficiency: 72, order: 3 },
@@ -166,19 +174,18 @@ async function seed() {
       { name: "CI/CD", category: "Tool", proficiency: 74, order: 8 },
     ];
 
-    const insertSkill = sqlite.prepare(
-      "INSERT INTO skills (user_id, name, category, proficiency, display_order) VALUES (?, ?, ?, ?, ?)"
-    );
-
     for (const skill of skillsData) {
-      insertSkill.run(userId, skill.name, skill.category, skill.proficiency, skill.order);
+      await client.execute({
+        sql: "INSERT INTO skills (user_id, name, category, proficiency, display_order) VALUES (?, ?, ?, ?, ?)",
+        args: [userId, skill.name, skill.category, skill.proficiency, skill.order],
+      });
     }
     console.log("✅ Skills seeded");
   }
 
   // Seed projects
-  const existingProjects = sqlite.prepare("SELECT COUNT(*) as count FROM projects").get() as { count: number };
-  if (existingProjects.count === 0) {
+  const existingProjects = await client.execute("SELECT COUNT(*) as count FROM projects");
+  if (Number(existingProjects.rows[0].count) === 0) {
     const projectsData = [
       {
         title: "E-Commerce Platform",
@@ -204,6 +211,7 @@ async function seed() {
         title: "Task Management System",
         description: "Kanban-style project management tool with drag-and-drop task boards, team collaboration, sprint planning, and automated reporting. Integrates with GitHub for issue tracking.",
         techStack: "React, Redux, Express.js, PostgreSQL, GitHub API",
+        liveUrl: null,
         githubUrl: "https://github.com/himanshuzen10x/task-manager",
         status: "completed",
         featured: 1,
@@ -213,6 +221,7 @@ async function seed() {
         title: "AI Content Generator",
         description: "An AI-powered content generation platform that uses GPT APIs to generate blog posts, social media content, and marketing copy. Includes content scheduling and analytics.",
         techStack: "Next.js, OpenAI API, Python, FastAPI, Celery",
+        liveUrl: null,
         githubUrl: "https://github.com/himanshuzen10x/ai-content-gen",
         status: "completed",
         featured: 0,
@@ -232,6 +241,7 @@ async function seed() {
         title: "DevOps Monitoring Tool",
         description: "Server monitoring and alerting system with real-time metrics dashboards, log aggregation, and automated incident response. Currently building notification integrations.",
         techStack: "Go, React, Prometheus, Grafana, Docker, Kubernetes",
+        liveUrl: null,
         githubUrl: "https://github.com/himanshuzen10x/devops-monitor",
         status: "in-progress",
         featured: 0,
@@ -239,22 +249,18 @@ async function seed() {
       },
     ];
 
-    const insertProject = sqlite.prepare(
-      "INSERT INTO projects (user_id, title, description, tech_stack, live_url, github_url, status, featured, display_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-    );
-
     for (const proj of projectsData) {
-      insertProject.run(
-        userId, proj.title, proj.description, proj.techStack,
-        proj.liveUrl || null, proj.githubUrl, proj.status, proj.featured, proj.order
-      );
+      await client.execute({
+        sql: "INSERT INTO projects (user_id, title, description, tech_stack, live_url, github_url, status, featured, display_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        args: [userId, proj.title, proj.description, proj.techStack, proj.liveUrl, proj.githubUrl, proj.status, proj.featured, proj.order],
+      });
     }
     console.log("✅ Projects seeded");
   }
 
   // Seed experience
-  const existingExp = sqlite.prepare("SELECT COUNT(*) as count FROM experience").get() as { count: number };
-  if (existingExp.count === 0) {
+  const existingExp = await client.execute("SELECT COUNT(*) as count FROM experience");
+  if (Number(existingExp.rows[0].count) === 0) {
     const expData = [
       {
         company: "TechCorp Solutions",
@@ -294,19 +300,18 @@ async function seed() {
       },
     ];
 
-    const insertExp = sqlite.prepare(
-      "INSERT INTO experience (user_id, company, role, description, start_date, end_date, location, display_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-    );
-
     for (const exp of expData) {
-      insertExp.run(userId, exp.company, exp.role, exp.description, exp.startDate, exp.endDate, exp.location, exp.order);
+      await client.execute({
+        sql: "INSERT INTO experience (user_id, company, role, description, start_date, end_date, location, display_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        args: [userId, exp.company, exp.role, exp.description, exp.startDate, exp.endDate, exp.location, exp.order],
+      });
     }
     console.log("✅ Experience seeded");
   }
 
   // Seed education
-  const existingEdu = sqlite.prepare("SELECT COUNT(*) as count FROM education").get() as { count: number };
-  if (existingEdu.count === 0) {
+  const existingEdu = await client.execute("SELECT COUNT(*) as count FROM education");
+  if (Number(existingEdu.rows[0].count) === 0) {
     const eduData = [
       {
         institution: "Indian Institute of Technology (IIT)",
@@ -328,19 +333,18 @@ async function seed() {
       },
     ];
 
-    const insertEdu = sqlite.prepare(
-      "INSERT INTO education (user_id, institution, degree, field, start_year, end_year, gpa, display_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-    );
-
     for (const edu of eduData) {
-      insertEdu.run(userId, edu.institution, edu.degree, edu.field, edu.startYear, edu.endYear, edu.gpa, edu.order);
+      await client.execute({
+        sql: "INSERT INTO education (user_id, institution, degree, field, start_year, end_year, gpa, display_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        args: [userId, edu.institution, edu.degree, edu.field, edu.startYear, edu.endYear, edu.gpa, edu.order],
+      });
     }
     console.log("✅ Education seeded");
   }
 
   // Seed sample contact messages
-  const existingMsgs = sqlite.prepare("SELECT COUNT(*) as count FROM contact_messages").get() as { count: number };
-  if (existingMsgs.count === 0) {
+  const existingMsgs = await client.execute("SELECT COUNT(*) as count FROM contact_messages");
+  if (Number(existingMsgs.rows[0].count) === 0) {
     const messagesData = [
       {
         name: "John Smith",
@@ -365,12 +369,11 @@ async function seed() {
       },
     ];
 
-    const insertMsg = sqlite.prepare(
-      "INSERT INTO contact_messages (name, email, subject, message, is_read) VALUES (?, ?, ?, ?, ?)"
-    );
-
     for (const msg of messagesData) {
-      insertMsg.run(msg.name, msg.email, msg.subject, msg.message, msg.isRead);
+      await client.execute({
+        sql: "INSERT INTO contact_messages (name, email, subject, message, is_read) VALUES (?, ?, ?, ?, ?)",
+        args: [msg.name, msg.email, msg.subject, msg.message, msg.isRead],
+      });
     }
     console.log("✅ Contact messages seeded");
   }
